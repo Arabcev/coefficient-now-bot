@@ -239,7 +239,7 @@ async def generate_warehouse_keyboard(selected_warehouses=[], page: int = 0):
 
 
 # Выбор складов
-async def show_warehouse_selection(message: Message, selected_warehouses=None):
+async def show_warehouse_selection(message: Message, selected_warehouses=[]):
     # Отправляем клавиатуру с выбором складов
     keyboard = await generate_warehouse_keyboard(selected_warehouses)
     await message.answer('📦 Выберите склады для отслеживания:',
