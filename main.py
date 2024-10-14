@@ -36,7 +36,6 @@ ERROR_MESSAGES = {
 WAREHOUSES_ENDPOINT = 'https://supplies-api.wildberries.ru/api/v1/warehouses'
 COFFICIENTS_ENDPOINT = 'https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients'
 PING_ENDPOINT = 'https://supplies-api.wildberries.ru/ping'
-
 WAREHOUSES_PER_PAGE = 6
 
 # Логирование
@@ -320,9 +319,30 @@ async def finish_warehouse_selection(callback: CallbackQuery,
 # Главное меню с настройками
 @registration_router.message(Command('menu'))
 async def show_main_menu(message: Message):
+    pool = await create_db_pool()
+    async with pool.acquire() as conn:
+        notifications_enabled = await conn.fetchval(
+            'SELECT notifications_enabled FROM users WHERE telegram_id = $1',
+            message.from_user.id)
+    await pool.close()
+    keyboard = await generate_main_menu_keyboard(notifications_enabled)
+    await message.answer(
+        '🏠 Главное меню:',
+        reply_markup=keyboard
+    )
+
+
+async def generate_main_menu_keyboard(notifications_enabled: bool):
     keyboard = InlineKeyboardBuilder()
-    keyboard.button(text='⚙️ Настройки:', callback_data='settings')
-    await message.answer('🏠 Главное меню:', reply_markup=keyboard.as_markup())
+    keyboard.row(InlineKeyboardButton(
+        text='⚙️ Настройки:',
+        callback_data='settings'
+    ))
+    keyboard.row(InlineKeyboardButton(
+        text='⏸ Приостановить' if notifications_enabled else '▶️ Возобновить',
+        callback_data='toggle_notifications'
+    ))
+    return keyboard.as_markup()
 
 
 # Меню настроек
@@ -367,6 +387,31 @@ async def settings_menu(callback: CallbackQuery):
     else:
         await callback.message.answer('❌ Настройки не найдены.')
     await pool.close()
+
+
+@registration_router.callback_query(
+    lambda callback: callback.data == 'toggle_notifications')
+async def toggle_notificateions(callback: CallbackQuery):
+    telegram_id = callback.from_user.id
+
+    pool = await create_db_pool()
+    async with pool.acquire() as conn:
+        notifications_enabled = await conn.fetchval(
+            'SELECT notifications_enabled FROM users '
+            'WHERE telegram_id = $1',
+            telegram_id)
+        await conn.execute(
+            'UPDATE users SET notifications_enabled = $1 '
+            'WHERE telegram_id = $2',
+            not notifications_enabled, telegram_id
+        )
+    if notifications_enabled:
+        await callback.answer('Отправка уведомлений приостановлена!')
+    else:
+        await callback.answer('Отправка уведомлений возобновлена!')
+    await pool.close()
+    keyboard = await generate_main_menu_keyboard(not notifications_enabled)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
 
 
 @registration_router.callback_query(
@@ -482,10 +527,12 @@ async def start_polling():
     while True:
         async with pool.acquire() as conn:
             users = await conn.fetch(
-                'SELECT user_id, api_key, polling_frequency, notification_threshold FROM users')
+                'SELECT user_id, api_key, polling_frequency, '
+                'notification_threshold, notifications_enabled FROM users')
 
         for user in users:
-            if loop_num % user['polling_frequency'] == 0:
+            if (loop_num % user['polling_frequency'] == 0
+                    and user['notifications_enabled']):
                 await check_coefficients_for_user(
                     user['user_id'],
                     user['api_key'],
@@ -532,7 +579,6 @@ async def notify_user(user_id, coefficients):
     await bot.send_message(telegram_id, message)
 
 
-# Регистрация роутеров
 dp.include_router(registration_router)
 
 if __name__ == '__main__':
